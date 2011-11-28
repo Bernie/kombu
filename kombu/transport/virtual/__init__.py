@@ -10,22 +10,31 @@ Emulates the AMQ API for non-AMQ transports.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import base64
 import socket
+import warnings
 
 from itertools import count
 from time import sleep, time
 from Queue import Empty
 
-from kombu.exceptions import StdChannelError
-from kombu.transport import base
-from kombu.utils import emergency_dump_state, say, gen_unique_id
-from kombu.utils.compat import OrderedDict
-from kombu.utils.encoding import str_to_bytes, bytes_to_str
-from kombu.utils.finalize import Finalize
+from ...exceptions import StdChannelError
+from ...utils import emergency_dump_state, say
+from ...utils.compat import OrderedDict
+from ...utils.encoding import str_to_bytes, bytes_to_str
+from ...utils.finalize import Finalize
 
-from kombu.transport.virtual.scheduling import FairCycle
-from kombu.transport.virtual.exchange import STANDARD_EXCHANGE_TYPES
+from .. import base
+
+from .scheduling import FairCycle
+from .exchange import STANDARD_EXCHANGE_TYPES
+
+UNDELIVERABLE_FMT = """\
+Message could not be delivered: No queues bound to exchange %(exchange)r
+using binding key %(routing_key)r
+"""
 
 
 class Base64(object):
@@ -39,6 +48,11 @@ class Base64(object):
 
 class NotEquivalentError(Exception):
     """Entity declaration is not equivalent to the previous declaration."""
+    pass
+
+
+class UndeliverableWarning(UserWarning):
+    """The message could not be delivered to a queue."""
     pass
 
 
@@ -291,7 +305,15 @@ class Channel(AbstractChannel, base.StdChannel):
     #: NOTE: ``transport_options["body_encoding"]`` will override this value.
     body_encoding = "base64"
 
-    deadletter_queue = "ae.undeliver"
+    #: counter used to generate delivery tags for this channel.
+    _next_delivery_tag = count(1).next
+
+    #: Optional queue where messages with no route is delivered.
+    #: Set by ``transport_options["deadletter_queue"]``.
+    deadletter_queue = None
+
+    # List of options to transfer from :attr:`transport_options`.
+    from_transport_options = ("body_encoding", "deadletter_queue")
 
     def __init__(self, connection, **kwargs):
         self.connection = connection
@@ -310,10 +332,11 @@ class Channel(AbstractChannel, base.StdChannel):
         self.channel_id = self.connection._next_channel_id()
 
         topts = self.connection.client.transport_options
-        try:
-            self.body_encoding = topts["body_encoding"]
-        except KeyError:
-            pass
+        for opt_name in self.from_transport_options:
+            try:
+                setattr(self, opt_name, topts[opt_name])
+            except KeyError:
+                pass
 
     def exchange_declare(self, exchange, type="direct", durable=False,
             auto_delete=False, arguments=None, nowait=False):
@@ -495,11 +518,17 @@ class Channel(AbstractChannel, base.StdChannel):
         if default is None:
             default = self.deadletter_queue
         try:
-            return self.typeof(exchange).lookup(self.get_table(exchange),
-                                                exchange, routing_key, default)
+            R = self.typeof(exchange).lookup(self.get_table(exchange),
+                                             exchange, routing_key, default)
         except KeyError:
+            R = []
+
+        if not R and default is not None:
+            warnings.warn(UndeliverableWarning(UNDELIVERABLE_FMT % {
+                "exchange": exchange, "routing_key": routing_key}))
             self._new_queue(default)
-            return [default]
+            R = [default]
+        return R
 
     def _restore(self, message):
         """Redeliver message to its original destination."""

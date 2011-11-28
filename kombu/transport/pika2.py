@@ -1,6 +1,6 @@
 """
-kombu.transport.pypika
-======================
+kombu.transport.pika
+====================
 
 Pika transport.
 
@@ -8,26 +8,20 @@ Pika transport.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import socket
 
 from operator import attrgetter
 
-from kombu.exceptions import VersionMismatch
-from kombu.transport import base
+from . import base
 
-from pika import channel  # must be here to raise importerror for below.
-try:
-    from pika import asyncore_adapter
-except ImportError:
-    raise VersionMismatch("Kombu only works with pika version 0.5.2")
-from pika import blocking_adapter
-from pika import connection
+import pika
+from pika import spec
+from pika.adapters import blocking_connection as blocking
 from pika import exceptions
-from pika.spec import Basic, BasicProperties
 
 DEFAULT_PORT = 5672
-
-
 BASIC_PROPERTIES = ("content_type", "content_encoding",
                     "headers", "delivery_mode", "priority",
                     "correlation_id", "reply_to", "expiration",
@@ -58,35 +52,35 @@ class Message(base.Message):
         super(Message, self).__init__(channel, **kwargs)
 
 
-class Channel(channel.Channel, base.StdChannel):
+class Channel(blocking.BlockingChannel, base.StdChannel):
     Message = Message
 
     def basic_get(self, queue, no_ack):
-        method = channel.Channel.basic_get(self, queue=queue, no_ack=no_ack)
+        method = super(Channel, self).basic_get(self, queue=queue,
+                                                      no_ack=no_ack)
         # pika returns semi-predicates (GetEmpty/GetOk).
-        if isinstance(method, Basic.GetEmpty):
+        if isinstance(method, spec.Basic.GetEmpty):
             return
         return None, method, method._properties, method._body
 
     def queue_purge(self, queue=None, nowait=False):
-        return channel.Channel.queue_purge(self, queue=queue, nowait=nowait) \
-                              .message_count
+        return super(Channel, self).queue_purge(queue=queue,
+                                                nowait=nowait).message_count
 
     def basic_publish(self, message, exchange, routing_key, mandatory=False,
             immediate=False):
-        message_data, properties = message
+        body, properties = message
         try:
-            return channel.Channel.basic_publish(self,
-                                                 exchange,
-                                                 routing_key,
-                                                 message_data,
-                                                 properties,
-                                                 mandatory,
-                                                 immediate)
+            return super(Channel, self).basic_publish(exchange,
+                                                      routing_key,
+                                                      body,
+                                                      properties,
+                                                      mandatory,
+                                                      immediate)
         finally:
             # Pika does not automatically flush the outbound buffer
             # TODO async: Needs to support `nowait`.
-            self.handler.connection.flush_outbound()
+            self.connection._flush_outbound()
 
     def basic_consume(self, queue, no_ack=False, consumer_tag=None,
             callback=None, nowait=False):
@@ -97,25 +91,26 @@ class Channel(channel.Channel, base.StdChannel):
         def _callback_decode(channel, method, header, body):
             return callback((channel, method, header, body))
 
-        return channel.Channel.basic_consume(self, _callback_decode,
-                                             queue, no_ack,
-                                             False, consumer_tag)
+        return super(Channel, self).basic_consume(
+                _callback_decode, queue, no_ack, False, consumer_tag)
 
-    def prepare_message(self, message_data, priority=None,
+    def prepare_message(self, body, priority=None,
             content_type=None, content_encoding=None, headers=None,
             properties=None):
-        properties = BasicProperties(priority=priority,
-                                     content_type=content_type,
-                                     content_encoding=content_encoding,
-                                     headers=headers,
-                                     **properties)
-        return message_data, properties
+        properties = spec.BasicProperties(priority=priority,
+                                          content_type=content_type,
+                                          content_encoding=content_encoding,
+                                          headers=headers,
+                                          **properties)
+        return body, properties
 
     def message_to_python(self, raw_message):
         return self.Message(channel=self, amqp_message=raw_message)
 
-    def basic_ack(self, delivery_tag):
-        return channel.Channel.basic_ack(self, delivery_tag)
+    def basic_qos(self, prefetch_size, prefetch_count, a_global=False):
+        return super(Channel, self).basic_qos(prefetch_size=prefetch_size,
+                                              prefetch_count=prefetch_count,
+                                              global_=a_global)
 
     def __enter__(self):
         return self
@@ -123,8 +118,9 @@ class Channel(channel.Channel, base.StdChannel):
     def __exit__(self, *exc_info):
         self.close()
 
-    def close(self):
-        super(Channel, self).close()
+    def close(self, *args):
+        super(Channel, self).close(*args)
+        self.connection = None
         if getattr(self, "handler", None):
             if getattr(self.handler, "connection", None):
                 self.handler.connection.channels.pop(
@@ -137,69 +133,50 @@ class Channel(channel.Channel, base.StdChannel):
         return self.channel_number
 
 
-class BlockingConnection(blocking_adapter.BlockingConnection):
-    Super = blocking_adapter.BlockingConnection
+class Connection(blocking.BlockingConnection):
+    Channel = Channel
 
     def __init__(self, client, *args, **kwargs):
         self.client = client
-        self.Super.__init__(self, *args, **kwargs)
+        super(Connection, self).__init__(*args, **kwargs)
 
     def channel(self):
-        c = Channel(channel.ChannelHandler(self))
-        c.connection = self
-        return c
+        self._channel_open = False
+        cid = self._next_channel_number()
 
-    def close(self):
+        self.callbacks.add(cid, spec.Channel.CloseOk, self._on_channel_close)
+        transport = blocking.BlockingChannelTransport(self, cid)
+        channel = self._channels[cid] = self.Channel(self, cid, transport)
+        channel.connection = self
+        return channel
+
+    def drain_events(self, timeout=None):
+        if timeout:
+            prev = self.socket.gettimeout()
+            self.socket.settimeout(timeout)
+        try:
+            self._handle_read()
+        finally:
+            if timeout:
+                self.socket.settimeout(prev)
+            self._flush_outbound()
+
+    def close(self, *args):
         self.client = None
-        self.Super.close(self)
-
-    def ensure_drain_events(self, timeout=None):
-        return self.drain_events(timeout=timeout)
+        super(Connection, self).close(*args)
 
 
-class AsyncoreConnection(asyncore_adapter.AsyncoreConnection):
-    _event_counter = 0
-    Super = asyncore_adapter.AsyncoreConnection
-
-    def __init__(self, client, *args, **kwargs):
-        self.client = client
-        self.Super.__init__(self, *args, **kwargs)
-
-    def channel(self):
-        c = Channel(channel.ChannelHandler(self))
-        c.connection = self
-        return c
-
-    def ensure_drain_events(self, timeout=None):
-        # asyncore connection does not raise socket.timeout when timing out
-        # so need to do a little trick here to mimic the behavior
-        # of sync connection.
-        current_events = self._event_counter
-        self.drain_events(timeout=timeout)
-        if timeout and self._event_counter <= current_events:
-            raise socket.timeout("timed out")
-
-    def on_data_available(self, buf):
-        self._event_counter += 1
-        self.Super.on_data_available(self, buf)
-
-    def close(self):
-        self.client = None
-        self.Super.close(self)
-
-
-class SyncTransport(base.Transport):
+class Transport(base.Transport):
     default_port = DEFAULT_PORT
 
     connection_errors = (socket.error,
                          exceptions.ConnectionClosed,
                          exceptions.ChannelClosed,
-                         exceptions.LoginError,
+                         exceptions.AuthenticationError,
                          exceptions.NoFreeChannels,
                          exceptions.DuplicateConsumerTag,
                          exceptions.UnknownConsumerTag,
                          exceptions.RecursiveOperationDetected,
-                         exceptions.ContentTransmissionForbidden,
                          exceptions.ProtocolSyntaxError)
 
     channel_errors = (exceptions.ChannelClosed,
@@ -208,7 +185,7 @@ class SyncTransport(base.Transport):
                       exceptions.ProtocolSyntaxError)
 
     Message = Message
-    Connection = BlockingConnection
+    Connection = Connection
 
     def __init__(self, client, **kwargs):
         self.client = client
@@ -218,7 +195,7 @@ class SyncTransport(base.Transport):
         return connection.channel()
 
     def drain_events(self, connection, **kwargs):
-        return connection.ensure_drain_events(**kwargs)
+        return connection.drain_events(**kwargs)
 
     def establish_connection(self):
         """Establish connection to the AMQP broker."""
@@ -226,10 +203,10 @@ class SyncTransport(base.Transport):
         for name, default_value in self.default_connection_params.items():
             if not getattr(conninfo, name, None):
                 setattr(conninfo, name, default_value)
-        credentials = connection.PlainCredentials(conninfo.userid,
-                                                  conninfo.password)
+        credentials = pika.PlainCredentials(conninfo.userid,
+                                            conninfo.password)
         return self.Connection(self.client,
-                               connection.ConnectionParameters(
+                               pika.ConnectionParameters(
                                     conninfo.hostname, port=conninfo.port,
                                     virtual_host=conninfo.virtual_host,
                                     credentials=credentials))
@@ -242,7 +219,3 @@ class SyncTransport(base.Transport):
     def default_connection_params(self):
         return {"hostname": "localhost", "port": self.default_port,
                 "userid": "guest", "password": "guest"}
-
-
-class AsyncoreTransport(SyncTransport):
-    Connection = AsyncoreConnection

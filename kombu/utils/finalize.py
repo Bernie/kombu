@@ -10,9 +10,13 @@ Taken from :class:`multiprocessing.util.Finalize`.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import weakref
 
 from itertools import count
+
+__all__ = ["Finalize"]
 
 
 class Finalize(object):

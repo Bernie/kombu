@@ -8,32 +8,47 @@ Internal utilities.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import sys
 
+from contextlib import contextmanager
 from time import sleep
 from uuid import UUID, uuid4 as _uuid4, _uuid_generate_random
 
-from kombu.utils.encoding import safe_repr as _safe_repr
+from .encoding import safe_repr as _safe_repr
 
 try:
     import ctypes
 except:
     ctypes = None  # noqa
 
+__all__ = ["EqualityDict", "say", "uuid", "kwdict", "maybe_list",
+           "fxrange", "fxrangemax", "retry_over_time",
+           "emergency_dump_state", "cached_property",
+           "reprkwargs", "reprcall", "nested"]
 
-class HashingDict(dict):
+
+def eqhash(o):
+    try:
+        return o.__eqhash__()
+    except AttributeError:
+        return hash(o)
+
+
+class EqualityDict(dict):
 
     def __getitem__(self, key):
-        h = hash(key)
+        h = eqhash(key)
         if h not in self:
             return self.__missing__(key)
         return dict.__getitem__(self, h)
 
     def __setitem__(self, key, value):
-        return dict.__setitem__(self, hash(key), value)
+        return dict.__setitem__(self, eqhash(key), value)
 
     def __delitem__(self, key):
-        return dict.__delitem__(self, hash(key))
+        return dict.__delitem__(self, eqhash(key))
 
 
 def say(m, *s):
@@ -51,7 +66,7 @@ def uuid4():
 
 def uuid():
     """Generate a unique id, having - hopefully - a very small chance of
-    collission.
+    collision.
 
     For now this is provided by :func:`uuid.uuid4`.
     """
@@ -65,7 +80,7 @@ if sys.version_info >= (3, 0):
         return kwargs
 else:
     def kwdict(kwargs):  # noqa
-        """Make sure keyword arguments are not in unicode.
+        """Make sure keyword arguments are not in Unicode.
 
         This should be fixed in newer Python versions,
         see: http://bugs.python.org/issue4978.
@@ -142,7 +157,7 @@ def retry_over_time(fun, catch, args=[], kwargs={}, errback=None,
         try:
             return fun(*args, **kwargs)
         except catch, exc:
-            if max_retries and retries > max_retries:
+            if max_retries is not None and retries > max_retries:
                 raise
             if errback:
                 errback(exc, interval)
@@ -169,54 +184,6 @@ def emergency_dump_state(state, open_file=open, dump=None):
         fh.flush()
         fh.close()
     return persist
-
-############## str.partition/str.rpartition #################################
-
-
-def _compat_rl_partition(S, sep, direction=None, reverse=False):
-    items = direction(sep, 1)
-    if len(items) == 1:
-        if reverse:
-            return '', '', items[0]
-        return items[0], '', ''
-    return items[0], sep, items[1]
-
-
-def _compat_partition(S, sep):
-    """``partition(S, sep) -> (head, sep, tail)``
-
-    Search for the separator ``sep`` in ``S``, and return the part before
-    it, the separator itself, and the part after it. If the separator is not
-    found, return ``S`` and two empty strings.
-
-    """
-    return _compat_rl_partition(S, sep, direction=S.split)
-
-
-def _compat_rpartition(S, sep):
-    """``rpartition(S, sep) -> (tail, sep, head)``
-
-    Search for the separator ``sep`` in ``S``, starting at the end of ``S``,
-    and return the part before it, the separator itself, and the part
-    after it. If the separator is not found, return two empty
-    strings and ``S``.
-
-    """
-    return _compat_rl_partition(S, sep, direction=S.rsplit, reverse=True)
-
-
-def partition(S, sep):
-    if hasattr(S, 'partition'):
-        return S.partition(sep)
-    else:  # Python <= 2.4:
-        return _compat_partition(S, sep)
-
-
-def rpartition(S, sep):
-    if hasattr(S, 'rpartition'):
-        return S.rpartition(sep)
-    else:  # Python <= 2.4:
-        return _compat_rpartition(S, sep)
 
 
 class cached_property(object):
@@ -295,3 +262,34 @@ def reprcall(name, args=(), kwargs=(), sep=', '):
     return "%s(%s%s%s)" % (name, sep.join(map(_safe_repr, args)),
                            (args and kwargs) and sep or "",
                            reprkwargs(kwargs, sep))
+
+
+@contextmanager
+def nested(*managers):
+    """Combine multiple context managers into a single nested
+    context manager."""
+    exits = []
+    vars = []
+    exc = (None, None, None)
+    try:
+        for mgr in managers:
+            exit = mgr.__exit__
+            enter = mgr.__enter__
+            vars.append(enter())
+            exits.append(exit)
+        yield vars
+    except:
+        exc = sys.exc_info()
+    finally:
+        while exits:
+            exit = exits.pop()
+            try:
+                if exit(*exc):
+                    exc = (None, None, None)
+            except:
+                exc = sys.exc_info()
+        if exc != (None, None, None):
+            # Don't rely on sys.exc_info() still containing
+            # the right information. Another exception may
+            # have been raised and caught by an exit method
+            raise exc[0], exc[1], exc[2]

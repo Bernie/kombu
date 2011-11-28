@@ -8,13 +8,15 @@ Public resource pools.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import os
 
 from itertools import chain
 
-from kombu.connection import Resource
-from kombu.messaging import Producer
-from kombu.utils import HashingDict
+from .connection import Resource
+from .messaging import Producer
+from .utils import EqualityDict
 
 __all__ = ["ProducerPool", "PoolGroup", "register_group",
            "connections", "producers", "get_limit", "set_limit", "reset"]
@@ -34,8 +36,11 @@ class ProducerPool(Resource):
     def Producer(self, connection):
         return Producer(connection)
 
+    def _acquire_connection(self):
+        return self.connections.acquire(block=True)
+
     def create_producer(self):
-        return self.Producer(self.connections.acquire(block=True))
+        return self.Producer(self._acquire_connection())
 
     def new(self):
         return lambda: self.create_producer()
@@ -48,17 +53,18 @@ class ProducerPool(Resource):
     def prepare(self, p):
         if callable(p):
             p = p()
-        p.connection = self.connections.acquire(block=True)
-        p.revive(p.connection.default_channel)
+        if not p.channel:
+            connection = self._acquire_connection()
+            p.revive(connection.default_channel)
         return p
 
     def release(self, resource):
         resource.connection.release()
-        resource.connection = resource.channel = None
+        resource.channel = None
         super(ProducerPool, self).release(resource)
 
 
-class PoolGroup(HashingDict):
+class PoolGroup(EqualityDict):
 
     def __init__(self, limit=None):
         self.limit = limit

@@ -1,6 +1,6 @@
 """
-kombu.transport.pyredis
-=======================
+kombu.transport.redis
+=====================
 
 Redis transport.
 
@@ -8,15 +8,17 @@ Redis transport.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
 
 from Queue import Empty
 
 from anyjson import serialize, deserialize
 
-from kombu.exceptions import VersionMismatch
-from kombu.transport import virtual
-from kombu.utils import eventio
-from kombu.utils import cached_property
+from ..exceptions import VersionMismatch
+from ..utils import eventio, cached_property
+from ..utils.encoding import str_t
+
+from . import virtual
 
 DEFAULT_PORT = 6379
 DEFAULT_DB = 0
@@ -326,7 +328,7 @@ class Channel(virtual.Channel):
         if version < (2, 4, 4):
             raise VersionMismatch(
                 "Redis transport requires redis-py versions 2.4.4 or later. "
-                "You have %r" % (".".join(version), ))
+                "You have %r" % (".".join(map(str_t, version)), ))
 
         # KombuRedis maintains a connection attribute on it's instance and
         # uses that when executing commands

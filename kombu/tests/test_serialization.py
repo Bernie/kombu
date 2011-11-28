@@ -1,15 +1,16 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+from __future__ import absolute_import
 
 import sys
 
-from kombu.serialization import registry, register, SerializerNotInstalled, \
-                                raw_encode, register_yaml, register_msgpack, \
-                                decode, bytes_type, pickle, \
-                                unregister, register_pickle
+from ..serialization import (registry, register, SerializerNotInstalled,
+                             raw_encode, register_yaml, register_msgpack,
+                             decode, bytes_type, pickle,
+                             unregister, register_pickle)
 
-from kombu.tests.utils import unittest
-from kombu.tests.utils import mask_modules, skip_if_not_module
+from .utils import unittest
+from .utils import mask_modules, skip_if_not_module
 
 # For content_encoding tests
 unicode_string = u'abcdé\u8463'
@@ -63,12 +64,12 @@ def say(m):
 class test_Serialization(unittest.TestCase):
 
     def test_content_type_decoding(self):
-        self.assertEquals(unicode_string,
+        self.assertEqual(unicode_string,
                           registry.decode(
                               unicode_string_as_utf8,
                               content_type='plain/text',
                               content_encoding='utf-8'))
-        self.assertEquals(latin_string,
+        self.assertEqual(latin_string,
                           registry.decode(
                               latin_string_as_latin1,
                               content_type='application/data',
@@ -80,7 +81,7 @@ class test_Serialization(unittest.TestCase):
                                               content_encoding='binary'),
                               bytes_type)
 
-        self.assertEquals(unicode_string_as_utf8,
+        self.assertEqual(unicode_string_as_utf8,
                           registry.decode(
                               unicode_string_as_utf8,
                               content_type='application/data',
@@ -88,28 +89,28 @@ class test_Serialization(unittest.TestCase):
 
     def test_content_type_encoding(self):
         # Using the "raw" serializer
-        self.assertEquals(unicode_string_as_utf8,
+        self.assertEqual(unicode_string_as_utf8,
                           registry.encode(
                               unicode_string, serializer="raw")[-1])
-        self.assertEquals(latin_string_as_utf8,
+        self.assertEqual(latin_string_as_utf8,
                           registry.encode(
                               latin_string, serializer="raw")[-1])
         # And again w/o a specific serializer to check the
         # code where we force unicode objects into a string.
-        self.assertEquals(unicode_string_as_utf8,
+        self.assertEqual(unicode_string_as_utf8,
                             registry.encode(unicode_string)[-1])
-        self.assertEquals(latin_string_as_utf8,
+        self.assertEqual(latin_string_as_utf8,
                             registry.encode(latin_string)[-1])
 
     def test_json_decode(self):
-        self.assertEquals(py_data,
+        self.assertEqual(py_data,
                           registry.decode(
                               json_data,
                               content_type='application/json',
                               content_encoding='utf-8'))
 
     def test_json_encode(self):
-        self.assertEquals(registry.decode(
+        self.assertEqual(registry.decode(
                               registry.encode(py_data, serializer="json")[-1],
                               content_type='application/json',
                               content_encoding='utf-8'),
@@ -121,7 +122,7 @@ class test_Serialization(unittest.TestCase):
     @skip_if_not_module('msgpack')
     def test_msgpack_decode(self):
         register_msgpack()
-        self.assertEquals(msgpack_py_data,
+        self.assertEqual(msgpack_py_data,
                           registry.decode(
                               msgpack_data,
                               content_type='application/x-msgpack',
@@ -130,7 +131,7 @@ class test_Serialization(unittest.TestCase):
     @skip_if_not_module('msgpack')
     def test_msgpack_encode(self):
         register_msgpack()
-        self.assertEquals(registry.decode(
+        self.assertEqual(registry.decode(
                 registry.encode(msgpack_py_data, serializer="msgpack")[-1],
                 content_type='application/x-msgpack',
                 content_encoding='binary'),
@@ -142,7 +143,7 @@ class test_Serialization(unittest.TestCase):
     @skip_if_not_module('yaml')
     def test_yaml_decode(self):
         register_yaml()
-        self.assertEquals(py_data,
+        self.assertEqual(py_data,
                           registry.decode(
                               yaml_data,
                               content_type='application/x-yaml',
@@ -151,7 +152,7 @@ class test_Serialization(unittest.TestCase):
     @skip_if_not_module('yaml')
     def test_yaml_encode(self):
         register_yaml()
-        self.assertEquals(registry.decode(
+        self.assertEqual(registry.decode(
                               registry.encode(py_data, serializer="yaml")[-1],
                               content_type='application/x-yaml',
                               content_encoding='utf-8'),
@@ -161,14 +162,14 @@ class test_Serialization(unittest.TestCase):
                               content_encoding='utf-8'))
 
     def test_pickle_decode(self):
-        self.assertEquals(py_data,
+        self.assertEqual(py_data,
                           registry.decode(
                               pickle_data,
                               content_type='application/x-python-serialize',
                               content_encoding='binary'))
 
     def test_pickle_encode(self):
-        self.assertEquals(pickle_data,
+        self.assertEqual(pickle_data,
                           registry.encode(py_data,
                               serializer="pickle")[-1])
 

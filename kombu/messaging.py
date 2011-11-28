@@ -8,28 +8,28 @@ Sending and receiving messages.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 from itertools import count
 
-from kombu import entity
-from kombu.compression import compress
-from kombu.serialization import encode
-from kombu.syn import blocking as _SYN
-from kombu.utils import maybe_list
+from .entity import Exchange, Queue
+from .compression import compress
+from .serialization import encode
+from .utils import maybe_list
 
-Exchange = entity.Exchange
-Queue = entity.Queue
+__all__ = ["Exchange", "Queue", "Producer", "Consumer"]
 
 
 class Producer(object):
     """Message Producer.
 
-    :param channel: Connection channel.
-    :keyword exchange: Default exchange.
-    :keyword routing_key: Default routing key.
+    :param channel: Connection or channel.
+    :keyword exchange: Optional default exchange.
+    :keyword routing_key: Optional default routing key.
     :keyword serializer: Default serializer. Default is `"json"`.
     :keyword compression: Default compression method. Default is no
         compression.
-    :keyword auto_declare: Automatically declare the exchange
+    :keyword auto_declare: Automatically declare the default exchange
       at instantiation. Default is :const:`True`.
     :keyword on_return: Callback to call for undeliverable messages,
         when the `mandatory` or `immediate` arguments to
@@ -64,11 +64,10 @@ class Producer(object):
     def __init__(self, channel, exchange=None, routing_key=None,
             serializer=None, auto_declare=None, compression=None,
             on_return=None):
-        from kombu.connection import BrokerConnection
+        from .connection import BrokerConnection
         if isinstance(channel, BrokerConnection):
             channel = channel.default_channel
         self.channel = channel
-        self.connection = self.channel.connection.client
 
         self.exchange = exchange or self.exchange
         if self.exchange is None:
@@ -83,7 +82,6 @@ class Producer(object):
         self.exchange = self.exchange(self.channel)
         if self.auto_declare:
             self.declare()
-
         if self.on_return:
             self.channel.events["basic_return"].append(self.on_return)
 
@@ -97,10 +95,16 @@ class Producer(object):
         if self.exchange.name:
             self.exchange.declare()
 
+    def maybe_declare(self, entity, retry=False, **retry_policy):
+        if entity:
+            from .common import maybe_declare
+            return maybe_declare(entity, self.channel, retry, **retry_policy)
+
     def publish(self, body, routing_key=None, delivery_mode=None,
             mandatory=False, immediate=False, priority=0, content_type=None,
             content_encoding=None, serializer=None, headers=None,
-            compression=None, exchange=None, **properties):
+            compression=None, exchange=None, retry=False, retry_policy=None,
+            declare=[], **properties):
         """Publish message to the specified exchange.
 
         :param body: Message body.
@@ -109,9 +113,9 @@ class Producer(object):
         :keyword mandatory: Currently not supported.
         :keyword immediate: Currently not supported.
         :keyword priority: Message priority. A number between 0 and 9.
-        :keyword content_type: Content type. Default is autodetect.
-        :keyword content_encoding: Content encoding. Default is autodetect.
-        :keyword serializer: Serializer to use. Default is autodetect.
+        :keyword content_type: Content type. Default is auto-detect.
+        :keyword content_encoding: Content encoding. Default is auto-detect.
+        :keyword serializer: Serializer to use. Default is auto-detect.
         :keyword headers: Mapping of arbitrary headers to pass along
           with the message body.
         :keyword exchange: Override the exchange.  Note that this exchange
@@ -128,6 +132,10 @@ class Producer(object):
         if isinstance(exchange, Exchange):
             exchange = exchange.name
 
+        # Additional  entities to declare before publishing the message.
+        for entity in declare:
+            self.maybe_declare(entity, retry, **retry_policy or {})
+
         body, content_type, content_encoding = self._prepare(
                 body, serializer, content_type, content_encoding,
                 compression, headers)
@@ -138,13 +146,22 @@ class Producer(object):
                                         content_encoding,
                                         headers=headers,
                                         properties=properties)
+        publish = self._publish
+        if retry:
+            publish = self.connection.ensure(self, self._publish,
+                                             **retry_policy)
+        return publish(message, routing_key, mandatory, immediate, exchange)
+
+    def _publish(self, message, routing_key, mandatory, immediate, exchange):
         return self.exchange.publish(message, routing_key, mandatory,
                                      immediate, exchange=exchange)
 
     def revive(self, channel):
         """Revive the producer after connection loss."""
+        from .connection import BrokerConnection
+        if isinstance(channel, BrokerConnection):
+            channel = channel.default_channel
         self.channel = channel
-        self.connection = self.channel.connection.client
         self.exchange.revive(channel)
 
     def __enter__(self):
@@ -184,6 +201,13 @@ class Producer(object):
 
         return body, content_type, content_encoding
 
+    @property
+    def connection(self):
+        try:
+            return self.channel.connection.client
+        except AttributeError:
+            pass
+
 
 class Consumer(object):
     """Message consumer.
@@ -196,7 +220,7 @@ class Consumer(object):
     :keyword on_decode_error: see :attr:`on_decode_error`.
 
     """
-    #: The connection channel to use.
+    #: The connection/channel to use for this consumer.
     channel = None
 
     #: A single :class:`~kombu.entity.Queue`, or a list of queues to
@@ -223,18 +247,17 @@ class Consumer(object):
     #:
     #: The signature of the callback must take two arguments: `(message,
     #: exc)`, which is the message that can't be decoded and the exception
-    #: that occured while trying to decode it.
+    #: that occurred while trying to decode it.
     on_decode_error = None
 
     _next_tag = count(1).next   # global
 
     def __init__(self, channel, queues, no_ack=None, auto_declare=None,
             callbacks=None, on_decode_error=None):
-        from kombu.connection import BrokerConnection
+        from .connection import BrokerConnection
         if isinstance(channel, BrokerConnection):
             channel = channel.default_channel
         self.channel = channel
-        self.connection = self.channel.connection.client
 
         self.queues = queues
         if no_ack is not None:
@@ -382,9 +405,9 @@ class Consumer(object):
           Currently not supported by RabbitMQ.
 
         """
-        return _SYN(self.channel.basic_qos, prefetch_size,
-                                            prefetch_count,
-                                            apply_global)
+        return self.channel.basic_qos(prefetch_size,
+                                      prefetch_count,
+                                      apply_global)
 
     def recover(self, requeue=False):
         """Redeliver unacknowledged messages.
@@ -398,7 +421,7 @@ class Consumer(object):
           delivering it to an alternative subscriber.
 
         """
-        return _SYN(self.channel.basic_recover, requeue=requeue)
+        return self.channel.basic_recover(requeue=requeue)
 
     def receive(self, body, message):
         """Method called when a message is received.
@@ -422,7 +445,6 @@ class Consumer(object):
         for queue in self.queues:
             queue.revive(channel)
         self.channel = channel
-        self.connection = self.channel.connection.client
 
     def _basic_consume(self, queue, consumer_tag=None,
             no_ack=no_ack, nowait=True):
@@ -453,3 +475,10 @@ class Consumer(object):
 
     def __repr__(self):
         return "<Consumer: %s>" % (self.queues, )
+
+    @property
+    def connection(self):
+        try:
+            return self.channel.connection.client
+        except AttributeError:
+            pass

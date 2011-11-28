@@ -8,6 +8,8 @@ Evented IO support for multiple platforms.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import errno
 import select
 import socket
@@ -16,6 +18,8 @@ try:
     from eventlet.patcher import is_monkey_patched as is_eventlet
 except ImportError:
     is_eventlet = lambda module: False  # noqa
+
+__all__ = ["poll"]
 
 POLL_READ = 0x001
 POLL_ERR = 0x008 | 0x010 | 0x2000

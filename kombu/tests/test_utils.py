@@ -1,19 +1,19 @@
+from __future__ import absolute_import
+
 import pickle
 import sys
-from kombu.tests.utils import unittest
+
+from functools import wraps
 
 if sys.version_info >= (3, 0):
     from io import StringIO, BytesIO
 else:
     from StringIO import StringIO, StringIO as BytesIO  # noqa
 
-from kombu import utils
-from kombu.utils.functional import wraps
+from .. import utils
 
-from kombu.tests.utils import redirect_stdouts, mask_modules, skip_if_module
-
-partition = utils._compat_partition
-rpartition = utils._compat_rpartition
+from .utils import redirect_stdouts, mask_modules, skip_if_module
+from .utils import unittest
 
 
 class OldString(object):
@@ -38,48 +38,6 @@ class test_utils(unittest.TestCase):
         self.assertEqual(utils.maybe_list(1), [1])
         self.assertEqual(utils.maybe_list([1, 2, 3]), [1, 2, 3])
 
-    def assert_partition(self, p, t=str):
-        self.assertEqual(p(t("foo.bar.baz"), "."),
-                ("foo", ".", "bar.baz"))
-        self.assertEqual(p(t("foo"), "."),
-                ("foo", "", ""))
-        self.assertEqual(p(t("foo."), "."),
-                ("foo", ".", ""))
-        self.assertEqual(p(t(".bar"), "."),
-                ("", ".", "bar"))
-        self.assertEqual(p(t("."), "."),
-                ('', ".", ''))
-
-    def assert_rpartition(self, p, t=str):
-        self.assertEqual(p(t("foo.bar.baz"), "."),
-                ("foo.bar", ".", "baz"))
-        self.assertEqual(p(t("foo"), "."),
-                ("", "", "foo"))
-        self.assertEqual(p(t("foo."), "."),
-                ("foo", ".", ""))
-        self.assertEqual(p(t(".bar"), "."),
-                ("", ".", "bar"))
-        self.assertEqual(p(t("."), "."),
-                ('', ".", ''))
-
-    def test_compat_partition(self):
-        self.assert_partition(partition)
-
-    def test_compat_rpartition(self):
-        self.assert_rpartition(rpartition)
-
-    def test_partition(self):
-        self.assert_partition(utils.partition)
-
-    def test_rpartition(self):
-        self.assert_rpartition(utils.rpartition)
-
-    def test_partition_oldstr(self):
-        self.assert_partition(utils.partition, OldString)
-
-    def test_rpartition_oldstr(self):
-        self.assert_rpartition(utils.rpartition, OldString)
-
 
 class test_UUID(unittest.TestCase):
 
@@ -99,7 +57,7 @@ class test_UUID(unittest.TestCase):
 
         @mask_modules("ctypes")
         def with_ctypes_masked():
-            from kombu.utils import ctypes, uuid
+            from ..utils import ctypes, uuid
 
             self.assertIsNone(ctypes)
             tid = uuid()
@@ -161,17 +119,12 @@ class test_emergency_dump_state(unittest.TestCase):
         self.assertFalse(stdout.getvalue())
 
 
-_tried_to_sleep = [None]
-
-
 def insomnia(fun):
 
     @wraps(fun)
     def _inner(*args, **kwargs):
-        _tried_to_sleep[0] = None
-
         def mysleep(i):
-            _tried_to_sleep[0] = i
+            pass
 
         prev_sleep = utils.sleep
         utils.sleep = mysleep
@@ -185,37 +138,39 @@ def insomnia(fun):
 
 class test_retry_over_time(unittest.TestCase):
 
+    def setUp(self):
+        self.index = 0
+
+    class Predicate(Exception):
+        pass
+
+    def myfun(self):
+        if self.index < 9:
+            raise self.Predicate()
+        return 42
+
+    def errback(self, exc, interval):
+        sleepvals = (None, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 16.0)
+        self.index += 1
+        self.assertEqual(interval, sleepvals[self.index])
+
     @insomnia
     def test_simple(self):
-        index = [0]
-
-        class Predicate(Exception):
-            pass
-
-        def myfun():
-            sleepvals = {0: None,
-                         1: 2.0,
-                         2: 4.0,
-                         3: 6.0,
-                         4: 8.0,
-                         5: 10.0,
-                         6: 12.0,
-                         7: 14.0,
-                         8: 16.0,
-                         9: 16.0}
-            self.assertEqual(_tried_to_sleep[0], sleepvals[index[0]])
-            if index[0] < 9:
-                raise Predicate()
-            return 42
-
-        def errback(exc, interval):
-            index[0] += 1
-
-        x = utils.retry_over_time(myfun, Predicate, errback=errback,
-                                                    interval_max=14)
+        x = utils.retry_over_time(self.myfun, self.Predicate,
+                errback=self.errback, interval_max=14)
         self.assertEqual(x, 42)
-        _tried_to_sleep[0] = None
-        index[0] = 0
-        self.assertRaises(Predicate,
-                          utils.retry_over_time, myfun, Predicate,
-                          max_retries=1, errback=errback, interval_max=14)
+        self.assertEqual(self.index, 9)
+
+    @insomnia
+    def test_retry_once(self):
+        self.assertRaises(self.Predicate, utils.retry_over_time,
+                self.myfun, self.Predicate,
+                max_retries=1, errback=self.errback, interval_max=14)
+        self.assertEqual(self.index, 2)
+
+    @insomnia
+    def test_retry_never(self):
+        self.assertRaises(self.Predicate, utils.retry_over_time,
+                self.myfun, self.Predicate,
+                max_retries=0, errback=self.errback, interval_max=14)
+        self.assertEqual(self.index, 1)

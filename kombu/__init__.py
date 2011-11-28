@@ -1,5 +1,7 @@
 """AMQP Messaging Framework for Python"""
-VERSION = (1, 4, 1)
+from __future__ import absolute_import
+
+VERSION = (2, 0, 0, "a2")
 __version__ = ".".join(map(str, VERSION[0:3])) + "".join(VERSION[3:])
 __author__ = "Ask Solem"
 __contact__ = "ask@celeryproject.org"
@@ -10,6 +12,11 @@ __docformat__ = "restructuredtext en"
 
 import os
 import sys
+
+if sys.version_info < (2, 5):
+    raise Exception(
+        "Python 2.4 is not supported by this version. "
+        "Please use Kombu versions 1.3.x or earlier.")
 
 # Lazy loading.
 # - See werkzeug/__init__.py for the rationale behind this.
@@ -64,5 +71,5 @@ new_module.__dict__.update({
 
 if os.environ.get("KOMBU_LOG_DEBUG"):
     os.environ.update(KOMBU_LOG_CHANNEL="1", KOMBU_LOG_CONNECTION="1")
-    from kombu.utils import debug
+    from .utils import debug
     debug.setup_logging()

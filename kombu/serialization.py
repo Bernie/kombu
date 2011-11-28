@@ -8,6 +8,8 @@ Serialization utilities.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import codecs
 import sys
 
@@ -17,6 +19,11 @@ try:
 except ImportError:
     cpickle = None  # noqa
 
+from .exceptions import SerializerNotInstalled
+from .utils.encoding import str_to_bytes
+
+__all__ = ["pickle", "bytes_type", "encode", "decode",
+           "register", "unregister"]
 
 if sys.platform.startswith("java"):
 
@@ -49,11 +56,6 @@ if sys.version_info >= (3, 0):
     bytes_type = bytes
 
 
-class SerializerNotInstalled(StandardError):
-    """Support for the requested serialization type is not installed"""
-    pass
-
-
 class SerializerRegistry(object):
     """The registry keeps track of serialization methods."""
 
@@ -63,6 +65,7 @@ class SerializerRegistry(object):
         self._default_encode = None
         self._default_content_type = None
         self._default_content_encoding = None
+        self._disabled_content_types = set()
         self.type_to_name = {}
 
     def register(self, name, encoder, decoder, content_type,
@@ -72,6 +75,11 @@ class SerializerRegistry(object):
         if decoder:
             self._decoders[content_type] = decoder
         self.type_to_name[content_type] = name
+
+    def disable(self, name):
+        if '/' not in name:
+            name = self.type_to_name[name]
+        self._disabled_content_types.add(name)
 
     def unregister(self, name):
         try:
@@ -109,14 +117,14 @@ class SerializerRegistry(object):
                         "No encoder installed for %s" % serializer)
 
         # If a raw string was sent, assume binary encoding
-        # (it's likely either ASCII or a raw binary file, but 'binary'
-        # charset will encompass both, even if not ideal.
+        # (it's likely either ASCII or a raw binary file, and a character
+        # set of 'binary' will encompass both, even if not ideal.
         if not serializer and isinstance(data, bytes_type):
             # In Python 3+, this would be "bytes"; allow binary data to be
             # sent as a message without getting encoder errors
             return "application/data", "binary", data
 
-        # For unicode objects, force it into a string
+        # For Unicode objects, force it into a string
         if not serializer and isinstance(data, unicode):
             payload = data.encode("utf-8")
             return "text/plain", "utf-8", payload
@@ -132,11 +140,14 @@ class SerializerRegistry(object):
         payload = encoder(data)
         return content_type, content_encoding, payload
 
-    def decode(self, data, content_type, content_encoding):
+    def decode(self, data, content_type, content_encoding, force=False):
+        if content_type in self._disabled_content_types:
+            raise SerializerNotInstalled(
+                "Content-type %r has been disabled." % (content_type, ))
         content_type = content_type or 'application/data'
         content_encoding = (content_encoding or 'utf-8').lower()
 
-        # Don't decode 8-bit strings or unicode objects
+        # Don't decode 8-bit strings or Unicode objects
         if content_encoding not in ('binary', 'ascii-8bit') and \
                 not isinstance(data, unicode):
             data = _decode(data, content_encoding)
@@ -296,9 +307,12 @@ def register_yaml():
 def register_pickle():
     """The fastest serialization method, but restricts
     you to python clients."""
-    def deserialize(data):
-        return pickle.loads(data.encode("ascii"))
-    registry.register('pickle', pickle.dumps, deserialize,
+
+    # pickle doesn't handle unicode.
+    def unpickle(s):
+        return pickle.loads(str_to_bytes(s))
+
+    registry.register('pickle', pickle.dumps, unpickle,
                       content_type='application/x-python-serialize',
                       content_encoding='binary')
 

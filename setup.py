@@ -114,7 +114,7 @@ setup(
     test_suite="nose.collector",
     install_requires=[
         'anyjson>=0.3.1',
-        'amqplib>=1.0',
+        'kamqp',
     ],
     tests_require=tests_require,
     classifiers=[
@@ -126,7 +126,6 @@ setup(
         "Programming Language :: Python :: 2.7",
         "Programming Language :: Python :: 2.6",
         "Programming Language :: Python :: 2.5",
-        "Programming Language :: Python :: 2.4",
         "Programming Language :: Python :: 2",
         "Intended Audience :: Developers",
         "Topic :: Communications",

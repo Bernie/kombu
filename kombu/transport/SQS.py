@@ -8,6 +8,8 @@ Amazon SQS transport.
 :license: BSD, see LICENSE for more details.
 
 """
+from __future__ import absolute_import
+
 import socket
 import string
 
@@ -23,18 +25,16 @@ from boto.sdb.connection import SDBConnection
 from boto.sqs.connection import SQSConnection
 from boto.sqs.message import Message
 
-from kombu.transport import virtual
-from kombu.utils import cached_property, uuid
-from kombu.utils.encoding import safe_str
+from ..utils import cached_property, uuid
+from ..utils.encoding import safe_str
 
+from . import virtual
 
 # dots are replaced by dash, all other punctuation
 # replaced by underscore.
-CHARS_REPLACE = string.punctuation.replace('-', '') \
-                                  .replace('_', '') \
-                                  .replace('.', '')
-CHARS_REPLACE_TABLE = string.maketrans(CHARS_REPLACE + '.',
-                                       "_" * len(CHARS_REPLACE) + '-')
+CHARS_REPLACE_TABLE = dict((ord(c), 0x5f)
+                           for c in string.punctuation if c not in '-_.')
+CHARS_REPLACE_TABLE[0x2e] = 0x2d  # '.' -> '-'
 
 
 class Table(Domain):
@@ -286,6 +286,9 @@ class Channel(virtual.Channel):
                    aws_access_key_id=conninfo.userid,
                    aws_secret_access_key=conninfo.password,
                    port=conninfo.port)
+
+    def _next_delivery_tag(self):
+        return uuid()  # See #73
 
     @property
     def sqs(self):
